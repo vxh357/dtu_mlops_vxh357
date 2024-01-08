@@ -9,6 +9,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torchvision.datasets import MNIST
 from torchvision.utils import save_image
+from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
 
 # Model Hyperparameters
 dataset_path = "datasets"
@@ -118,32 +119,43 @@ optimizer = Adam(model.parameters(), lr=lr)
 
 
 print("Start training VAE...")
-model.train()
-for epoch in range(epochs):
-    overall_loss = 0
-    for batch_idx, (x, _) in enumerate(train_loader):
-        if batch_idx % 100 == 0:
-            print(batch_idx)
-        x = x.view(batch_size, x_dim)
-        x = x.to(DEVICE)
+with profile(activities=[ProfilerActivity.CPU], profile_memory=True, record_shapes=True, on_trace_ready=tensorboard_trace_handler("./log/vae_mnist")) as prof:
+    
+    model.train()
+    for epoch in range(epochs):
+        overall_loss = 0
+        for batch_idx, (x, _) in enumerate(train_loader):
+            if batch_idx % 100 == 0:
+                print(batch_idx)
+            x = x.view(batch_size, x_dim)
+            x = x.to(DEVICE)
 
-        optimizer.zero_grad()
+            optimizer.zero_grad()
+            
+            with record_function("model_forward"):
+                x_hat, mean, log_var = model(x)
 
-        x_hat, mean, log_var = model(x)
-        loss = loss_function(x, x_hat, mean, log_var)
+            with record_function("calculate_loss"):
+                loss = loss_function(x, x_hat, mean, log_var)
 
-        overall_loss += loss.item()
+            overall_loss += loss.item()
 
-        loss.backward()
-        optimizer.step()
-    print(
-        "\tEpoch",
-        epoch + 1,
-        "complete!",
-        "\tAverage Loss: ",
-        overall_loss / (batch_idx * batch_size),
-    )
-print("Finish!!")
+            with record_function("backward_pass"):
+                loss.backward()
+
+            with record_function("optimizer_step"):
+                optimizer.step()
+            
+        print(
+            "\tEpoch",
+            epoch + 1,
+            "complete!",
+            "\tAverage Loss: ",
+            overall_loss / (batch_idx * batch_size),
+        )
+    print("Finish!!")
+
+prof.export_chrome_trace("vae_training_trace.json")  # Export as a .json file
 
 # Generate reconstructions
 model.eval()
